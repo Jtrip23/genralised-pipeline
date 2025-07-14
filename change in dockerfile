@@ -1,0 +1,30 @@
+# BASE Image
+FROM fmk.nexus.onefiserv.net/fmk/java/openjdk17-jre:FMK-06-14-24 AS runtime
+
+# Switch to root user to create group and user
+USER root
+
+# Create a non-root user and group
+RUN groupadd -r mygroup && useradd -r -g mygroup myuser
+
+# Create a directory for the application and set permissions
+RUN mkdir /app && chown -R myuser:mygroup /app
+
+# Set the working directory
+WORKDIR /app
+
+# Accept the JAR name as a build argument
+ARG jarname                                                                                          +++ Added this line
+
+# Copy the JAR file into the container with correct ownership
+COPY --chown=myuser:mygroup target/${jarname} app.jar                                                +++ Added this line
+
+# Expose the port that the Spring Boot application will run on
+EXPOSE 8022
+
+# Switch to the non-root user
+USER myuser
+
+# Define the command to run when the container starts
+CMD ["java", "-jar", "app.jar"]
+
