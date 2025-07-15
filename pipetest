@@ -1,0 +1,46 @@
+stages:
+  - build_and_push
+
+variables:
+  IMAGE_NAME: "$CI_PROJECT_NAME"
+  IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
+  NEXUS_REGISTRY: "fmk.nexus-ci.onefiserv.net"
+  NEXUS_REPO_PATH: "apm/0006528"
+  FULL_IMAGE_NAME: "$NEXUS_REGISTRY/$NEXUS_REPO_PATH/$IMAGE_NAME:$IMAGE_TAG"
+
+build_and_push_image:
+  stage: build_and_push
+  tags:
+    - apimhub-shell-prod
+  script:
+    - echo "Logging in to Nexus Docker registry..."
+    - echo "$NEXUS_REPO_PASS" | docker login -u $NEXUS_REPO_USER --password-stdin $NEXUS_REGISTRY
+
+    # Generalized build step
+    - |
+      echo "Detecting project type..."
+      if [ -f "pom.xml" ]; then
+        echo "Java project detected - building via Docker multi-stage build"
+      elif [ -f "package.json" ] && grep -q "react-scripts" package.json; then
+        echo "React project detected - building static files"
+        npm install
+        npm run build
+      elif [ -f "package.json" ]; then
+        echo "Node.js project detected"
+        npm install
+      elif [ -f "requirements.txt" ]; then
+        echo "Python project detected"
+        pip install -r requirements.txt
+      else
+        echo "Unknown project type - proceeding with generic docker build"
+      fi
+
+    - echo "Building Docker image..."
+    - docker build -t $FULL_IMAGE_NAME .
+
+    - echo "Pushing Docker image to Nexus..."
+    - docker push $FULL_IMAGE_NAME
+
+  rules:
+    - changes:
+        - "**/*"
