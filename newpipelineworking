@@ -1,0 +1,156 @@
+stages:
+  - detect
+  - test
+  - build
+  - fortify
+  - push
+
+variables:
+  IMAGE_NAME: "$CI_PROJECT_NAME"
+  IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
+  NEXUS_REPO_USER: "svc-apim-cicd-dev"
+  NEXUS_REPO_PASS: "F_arX1Z%fIQSfZEM@aJL9RRk*"
+  NEXUS_REGISTRY: "fmk.nexus-ci.onefiserv.net"
+  NEXUS_REPO_PATH: "apm/0006528"
+  APIHUB_FORTIFY: "fmk.nexus.onefiserv.net/vendor/docker/fortifydocker/fortify-ci-tools:6.2.0-jdk-11"
+  FMK_PROD: "fmk.nexus.onefiserv.net"
+  FMK_OPENJDK_IMAGE: "$FMK_PROD/fmk/java/openjdk-17-maven:FMK-12-01-23"
+  FULL_IMAGE_NAME: "$NEXUS_REGISTRY/$NEXUS_REPO_PATH/$IMAGE_NAME:$IMAGE_TAG"
+  MAVEN_CLI_OPTS: "-s $CI_PROJECT_DIR/.m2/cicd-settings.xml --batch-mode"
+  JAR_NAME: "$CI_PROJECT_NAME-0.0.1-SNAPSHOT.jar"
+
+include: 
+  - ci/global.variable.yml
+
+default:
+  tags:
+    - apihub-prod
+
+detect_framework:
+  stage: detect
+  script:
+    - |
+      if [ -f "pom.xml" ]; then echo "java" > framework.txt
+      elif [ -f "requirements.txt" ]; then echo "python" > framework.txt
+      elif grep -q '"react"' package.json 2>/dev/null; then echo "react" > framework.txt
+      elif [ -f "package.json" ]; then echo "node" > framework.txt
+      else echo "unknown" > framework.txt
+      fi
+    - cat framework.txt
+  artifacts:
+    paths:
+      - framework.txt
+
+unit_test_analysis:
+  stage: test
+  image: $FMK_OPENJDK_IMAGE
+  needs: [detect_framework]
+  script:
+    - |
+      if [ "$(cat framework.txt)" != "java" ]; then echo "Skipping Java tests"; exit 0; fi
+      echo "Running unit tests with log output..."
+      mvn $MAVEN_CLI_OPTS test | tee unit_test_output.log
+  artifacts:
+    paths:
+      - unit_test_output.log
+    when: always
+
+package_java:
+  stage: build
+  needs: [detect_framework, unit_test_analysis]
+  image: $FMK_OPENJDK_IMAGE
+  script:
+    - |
+      if [ "$(cat framework.txt)" != "java" ]; then echo "Skipping Java packaging"; exit 0; fi
+      echo "Detected Java project"
+      mvn $MAVEN_CLI_OPTS clean install -DskipTests
+  artifacts:
+    paths:
+      - "target/$JAR_NAME"
+
+fortify-scan:
+  stage: fortify
+  image: $APIHUB_FORTIFY
+  needs:
+    - package_java
+  script:
+    - |
+      echo "LAST_EXECUTED_STAGE_NAME=$CI_JOB_STAGE" >> build.env
+      echo "LAST_EXECUTED_STAGE_URL=$CI_JOB_URL" >> build.env
+    - pwd && ls -ltr
+    - |
+      echo "SSC_URL: $SSC_URL"
+      echo "SSC_TOKEN: $SSC_TOKEN"
+    #- sourceanalyzer -version  
+    - scancentral -help
+    - |
+      echo "DOCKER_IMAGE_NAME: $DOCKER_IMAGE_NAME"
+      VERSION=$DOCKER_IMAGE_NAME
+      echo "Extracted version: $VERSION"
+    - scancentral -sscurl $SSC_URL -ssctoken $SSC_TOKEN start -upload -application APM0006528 -version $VERSION -uptoken $SSC_TOKEN -email $FORTIFY_NOTIFICATION_DL -bt none | tee scancentral_output.log
+    - ls -ltr
+    - cat scancentral_output.log
+  artifacts:
+    paths:
+      - "scancentral_output.log"
+    reports:
+      dotenv: build.env
+  allow_failure: true
+
+package_python:
+  stage: build
+  needs: [detect_framework]
+  image: python:3.11
+  script:
+    - |
+      if [ "$(cat framework.txt)" != "python" ]; then echo "Skipping Python packaging"; exit 0; fi
+      echo "Detected Python project"
+      python -m venv venv
+      source venv/bin/activate
+      pip install --upgrade pip
+      if [ -f "requirements.txt" ]; then
+        echo "Installing dependencies from requirements.txt"
+        pip install --trusted-host nexus.onefiserv.net -r requirements.txt
+      else
+        echo "No requirements.txt found, skipping dependency installation"
+      fi
+package_react:
+  stage: build
+  needs: [detect_framework]
+  script:
+    - |
+      if [ "$(cat framework.txt)" != "react" ]; then echo "Skipping React packaging"; exit 0; fi
+      echo "Detected React project"
+      npm install
+      npm run build
+
+package_node:
+  stage: build
+  needs: [detect_framework]
+  script:
+    - |
+      if [ "$(cat framework.txt)" != "node" ]; then echo "Skipping Node.js packaging"; exit 0; fi
+      echo "Detected Node.js project"
+      npm install
+      npm run build
+
+build_and_push_image:
+  stage: push
+  needs:
+    - detect_framework
+    - package_java
+    - package_python
+    - package_react
+    - package_node
+    - fortify-scan
+  script:
+    - echo "Logging in to Nexus Docker registry..."
+    - echo "$NEXUS_REPO_PASS" | docker login -u $NEXUS_REPO_USER --password-stdin $NEXUS_REGISTRY
+    - echo "Building Docker image..."
+    - docker build -t $FULL_IMAGE_NAME .
+    - echo "Pushing Docker image to Nexus..."
+    - docker push $FULL_IMAGE_NAME
+  rules:
+    - changes:
+        - "**/*"
+
