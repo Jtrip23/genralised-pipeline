@@ -18,6 +18,8 @@ variables:
   FULL_IMAGE_NAME: "$NEXUS_REGISTRY/$NEXUS_REPO_PATH/$IMAGE_NAME:$IMAGE_TAG"
   MAVEN_CLI_OPTS: "-s $CI_PROJECT_DIR/.m2/cicd-settings.xml --batch-mode"
   JAR_NAME: "$CI_PROJECT_NAME-0.0.1-SNAPSHOT.jar"
+  SSC_TOKEN: "fc696929-06b5-4761-997e-e07b16518478"
+  SSC_URL: "https://fortify.fiserv.one/ssc"
 
 include: 
   - ci/global.variable.yml
@@ -82,7 +84,7 @@ fortify-scan:
       echo "SSC_URL: $SSC_URL"
       echo "SSC_TOKEN: $SSC_TOKEN"
     #- sourceanalyzer -version  
-    - scancentral -help
+    
     - |
       echo "DOCKER_IMAGE_NAME: $DOCKER_IMAGE_NAME"
       VERSION=$DOCKER_IMAGE_NAME
@@ -134,23 +136,20 @@ package_node:
       npm install
       npm run build
 
-build_and_push_image:
+publish-dev-alpha:
   stage: push
-  needs:
-    - detect_framework
-    - package_java
-    - package_python
-    - package_react
-    - package_node
-    - fortify-scan
+  tags:
+    - $APIGEE_SHELL_RUNNGER_TAG 
+  only:
+    - alphadev
   script:
-    - echo "Logging in to Nexus Docker registry..."
-    - echo "$NEXUS_REPO_PASS" | docker login -u $NEXUS_REPO_USER --password-stdin $NEXUS_REGISTRY
-    - echo "Building Docker image..."
-    - docker build -t $FULL_IMAGE_NAME .
-    - echo "Pushing Docker image to Nexus..."
-    - docker push $FULL_IMAGE_NAME
-  rules:
-    - changes:
-        - "**/*"
+    -  | 
+        echo "Alpha"
+        printenv
+        echo "$Nexus_REPO_PASS" | docker login --password-stdin --username $Nexus_REPO_USER $FMK_PROD
+        docker build --build-arg jarname=$JAR_NAME . -t  $FMK_PROD/apm/0006528/$DOCKER_IMAGE_NAME:dev-$CI_COMMIT_SHORT_SHA
+        docker push $FMK_PROD/apm/0006528/$DOCKER_IMAGE_NAME:dev-$CI_COMMIT_SHORT_SHA
+        docker tag $FMK_PROD/apm/0006528/$DOCKER_IMAGE_NAME:dev-$CI_COMMIT_SHORT_SHA $FMK_PROD/apm/0006528/$DOCKER_IMAGE_NAME-dev:latest
+        docker push $FMK_PROD/apm/0006528/$DOCKER_IMAGE_NAME-dev:latest
+  
 
